@@ -1,0 +1,42 @@
+# compose.dev.yml
+#@Shelton Bumhe 
+# What this file does:
+# - Starts MongoDB for persistence (zones, events, runs, metrics)
+# - Starts the FastAPI backend in a container on the same network
+# - Keeps setup reproducible for judges and teammates
+
+services:
+  mongodb:
+    image: mongo:7
+    container_name: ropt-mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - ropt_mongo_data:/data/db
+    environment:
+      MONGO_INITDB_DATABASE: ropt
+
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: ropt-backend
+    depends_on:
+      - mongodb
+    environment:
+      # backend settings
+      ROPT_BACKEND_HOST: 0.0.0.0
+      ROPT_BACKEND_PORT: 8000
+
+      # mongo settings (use service name "mongodb")
+      ROPT_MONGO_URI: mongodb://mongodb:27017
+      ROPT_MONGO_DB: ropt
+
+      # cuOpt (optional placeholder)
+      ROPT_CUOPT_URL: http://cuopt:5000
+      ROPT_CUOPT_TIMEOUT_S: 0.05
+    ports:
+      - "8000:8000"
+
+volumes:
+  ropt_mongo_data:

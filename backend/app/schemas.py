@@ -3,39 +3,52 @@
 # This file handles all the data objects for our safety system.
 # It makes sure the JSON we send back and forth actually makes sense.
 
-class SafetyEventIn:
-    def __init__(self, event_type, ts_ms, actor_id, zone_id, payload=None):
-        self.event_type = event_type # e.g., "person_entered"
-        self.ts_ms = ts_ms           # timestamp in milliseconds
-        self.actor_id = actor_id
-        self.zone_id = zone_id
-        
-        if payload is None:
-            self.payload = {}
-        else:
-            self.payload = payload
+from pydantic import BaseModel, Field
+from typing import Dict, Any, List, Optional
+
+
+class SafetyEventIn(BaseModel):
+    event_type: str
+    ts_ms: int
+    actor_id: str
+    zone_id: str
+    run_id: Optional[str] = None
+    payload: Dict[str, Any] = Field(default_factory=dict)
+
 
 class SafetyEventOut(SafetyEventIn):
-    def __init__(self, event_type, ts_ms, actor_id, zone_id, received_ms, payload=None):
-        super().__init__(event_type, ts_ms, actor_id, zone_id, payload)
-        self.received_ms = received_ms
-class ZoneDef:
-    def __init__(self, zone_id, polygon):
-        self.zone_id = zone_id
-        self.polygon = polygon 
+    received_ms: int
+    _id: Optional[str] = None
 
-class ZonesPayload:
-    def __init__(self, zones_list):
-        self.zones = zones_list 
 
-class ActorSnapshot:
-    def __init__(self, last_seen_ms, zones_dict):
-        self.last_seen_ms = last_seen_ms
-        self.zones = zones_dict
-class StateSnapshot:
-    def __init__(self, ts_ms, actors_dict, recent_events_list):
-        self.ts_ms = ts_ms
-        self.actors = actors_dict           
-        self.recent_events = recent_events_list 
+class ZoneDef(BaseModel):
+    zone_id: str
+    polygon: List[List[float]]  # [[x,y]...], image or world coords
+    frame: Optional[str] = "cam_01"
+    severity: Optional[str] = "soft"  # soft | emergency
+    notes: Optional[str] = None
 
-# TODO: Add a method to convert these to dictionaries for JSON export
+
+class ZonesPayload(BaseModel):
+    zones: List[ZoneDef]
+
+
+class RunStartIn(BaseModel):
+    notes: Optional[str] = None
+
+
+class RunStopIn(BaseModel):
+    run_id: str
+    notes: Optional[str] = None
+
+
+class MetricIn(BaseModel):
+    ts_ms: int
+    run_id: Optional[str] = None
+    pipeline_fps: float = 0.0
+    gpu_util_pct: float = 0.0
+    mem_util_pct: float = 0.0
+    evt_to_backend_ms: float = 0.0
+    cuopt_solve_ms: float = 0.0
+    end_to_end_ms: float = 0.0
+    notes: Optional[str] = None
