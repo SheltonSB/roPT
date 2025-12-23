@@ -1,23 +1,25 @@
 """
 events.py
-What this file does:
-- High-throughput event ingestion endpoint.
-- Writes events to MongoDB and updates live runtime state.
+High-throughput event ingestion endpoint.
+Writes events to MongoDB and updates live runtime state.
 """
 
 import asyncio
 from fastapi import APIRouter
-from ..app.schemas import SafetyEventIn
-from ..app.runtime_state import RuntimeState, now_ms
-from ..app.repos import events_repo
+
+from ..schemas import SafetyEventIn
+from ..runtime_state import RuntimeState, now_ms
+from ..repos import events_repo
 
 router = APIRouter()
 QUEUE: "asyncio.Queue[SafetyEventIn]" = None
+
 
 def bind(state: RuntimeState, queue: "asyncio.Queue[SafetyEventIn]"):
     router.state_ref = state
     global QUEUE
     QUEUE = queue
+
 
 @router.post("/events")
 async def ingest_event(e: SafetyEventIn):
@@ -26,6 +28,7 @@ async def ingest_event(e: SafetyEventIn):
         return {"ok": True}
     except asyncio.QueueFull:
         return {"ok": False, "error": "event_queue_full"}
+
 
 @router.get("/events")
 async def get_events(run_id: str | None = None, since_ms: int | None = None, limit: int = 200):

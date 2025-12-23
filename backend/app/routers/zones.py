@@ -1,19 +1,20 @@
 """
-@Shelton Bumhe
 zones.py
-What this file does:
-- Stores/retrieves zone polygons in MongoDB.
+Stores and retrieves zone polygons in MongoDB.
 """
 
 from fastapi import APIRouter
-from ..app.schemas import ZonesPayload
-from ..app.repos import zones_repo
+
+from ..schemas import ZonesPayload
+from ..repos import zones_repo
 
 router = APIRouter()
+
 
 @router.get("/zones")
 async def get_zones():
     return {"zones": await zones_repo.get_zones()}
+
 
 @router.put("/zones")
 async def put_zones(payload: ZonesPayload):

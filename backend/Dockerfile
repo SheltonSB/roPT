@@ -12,4 +12,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 
 EXPOSE 8000
-CMD ["uvicorn", "app.api_server:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run the full async backend (Mongo + queues + routers)
+CMD ["uvicorn", "app.api_saver:app", "--host", "0.0.0.0", "--port", "8000"]

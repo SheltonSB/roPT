@@ -6,8 +6,8 @@ What this file does:
 """
 
 from fastapi import APIRouter
-from ..db.mongo import get_db
-from ..runtime_state import now_ms
+from ..app.db.mongo import get_db
+from ..app.runtime_state import now_ms
 
 router = APIRouter()
 
