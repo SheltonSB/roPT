@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 const API_BASE = import.meta.env.VITE_API_BASE || "http://127.0.0.1:8000";
 const WS_URL = API_BASE.replace(/^http/, "ws").replace(/\/$/, "") + "/ws";
 
 const VIEW = { width: 960, height: 560, padding: 32 };
+const FRAME_WIDTH = Number(import.meta.env.VITE_FRAME_WIDTH || 0);
+const FRAME_HEIGHT = Number(import.meta.env.VITE_FRAME_HEIGHT || 0);
 
 function formatTime(ts) {
   if (!ts) return "n/a";
@@ -17,6 +19,11 @@ function App() {
   const [connection, setConnection] = useState("connecting");
   const [lastUpdate, setLastUpdate] = useState(null);
   const [error, setError] = useState(null);
+  const [flashZones, setFlashZones] = useState({});
+  const [ghostPaths, setGhostPaths] = useState([]);
+  const [nodeIndex, setNodeIndex] = useState({});
+  const seenEventsRef = useRef(new Set());
+  const flashTimersRef = useRef({});
 
   useEffect(() => {
     fetch(`${API_BASE}/zones`)
@@ -40,6 +47,22 @@ function App() {
   }, []);
 
   useEffect(() => {
+    fetch(`${API_BASE}/planning/graph`)
+      .then((r) => r.json())
+      .then((data) => {
+        const nodes = data.graph?.nodes || [];
+        const map = {};
+        nodes.forEach((n) => {
+          if (n.id) {
+            map[n.id] = { x: n.x, y: n.y };
+          }
+        });
+        setNodeIndex(map);
+      })
+      .catch((err) => setError(err.message));
+  }, []);
+
+  useEffect(() => {
     const ws = new WebSocket(WS_URL);
     setConnection("connecting");
 
@@ -52,6 +75,9 @@ function App() {
         if (msg.type === "snapshot") {
           setSnapshot(msg.data);
           setLastUpdate(Date.now());
+          handleFlashEvents(msg.data?.recent_events || []);
+        } else if (msg.type === "route_update") {
+          setGhostPaths(buildGhostPaths(msg.data));
         }
       } catch (err) {
         setError(err.message);
@@ -67,7 +93,57 @@ function App() {
     return () => clearInterval(id);
   }, [connection]);
 
+  const handleFlashEvents = (events) => {
+    if (!events?.length) return;
+    const seen = seenEventsRef.current;
+    events.forEach((evt) => {
+      const type = String(evt.event_type || "");
+      if (!type.includes("ENTER")) return;
+      const key = `${evt._id || evt.ts_ms}-${evt.actor_id}-${evt.zone_id}-${evt.event_type}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      if (seen.size > 2000) {
+        seen.clear();
+      }
+      if (evt.zone_id) {
+        triggerZoneFlash(evt.zone_id);
+      }
+    });
+  };
+
+  const triggerZoneFlash = (zoneId) => {
+    setFlashZones((prev) => ({ ...prev, [zoneId]: true }));
+    if (flashTimersRef.current[zoneId]) {
+      clearTimeout(flashTimersRef.current[zoneId]);
+    }
+    flashTimersRef.current[zoneId] = setTimeout(() => {
+      setFlashZones((prev) => {
+        const next = { ...prev };
+        delete next[zoneId];
+        return next;
+      });
+    }, 1200);
+  };
+
+  const buildGhostPaths = (payload) => {
+    if (!payload) return [];
+    const candidates = payload.candidates || [];
+    const optimal = payload.optimal_path || [];
+    const paths = candidates.map((path, idx) => ({
+      id: `cand-${idx}`,
+      nodes: path,
+      best: false
+    }));
+    if (optimal.length) {
+      paths.unshift({ id: "optimal", nodes: optimal, best: true });
+    }
+    return paths;
+  };
+
   const bounds = useMemo(() => {
+    if (FRAME_WIDTH > 0 && FRAME_HEIGHT > 0) {
+      return { minX: 0, minY: 0, maxX: FRAME_WIDTH, maxY: FRAME_HEIGHT };
+    }
     if (!zones.length) {
       return { minX: 0, minY: 0, maxX: 1, maxY: 1 };
     }
@@ -113,6 +189,17 @@ function App() {
       return { ...z, points, center: { x: cx, y: cy } };
     });
   }, [zones, bounds]);
+
+  const mapPointToView = (p) => {
+    const { minX, minY, maxX, maxY } = bounds;
+    const dx = maxX - minX || 1;
+    const dy = maxY - minY || 1;
+    const scaleX = (VIEW.width - VIEW.padding * 2) / dx;
+    const scaleY = (VIEW.height - VIEW.padding * 2) / dy;
+    const px = VIEW.padding + (p.x - minX) * scaleX;
+    const py = VIEW.padding + (p.y - minY) * scaleY;
+    return `${px.toFixed(1)},${py.toFixed(1)}`;
+  };
 
   const actors = useMemo(() => {
     if (!snapshot?.actors) return [];
@@ -170,8 +257,24 @@ function App() {
                   <stop offset="100%" stopColor="#F08A5D" stopOpacity="0.22" />
                 </linearGradient>
               </defs>
+              {ghostPaths.map((path) => (
+                <polyline
+                  key={path.id}
+                  className={`ghost-path${path.best ? " best" : ""}`}
+                  points={path.nodes
+                    .map((nodeId) => nodeIndex[nodeId])
+                    .filter(Boolean)
+                    .map((p) => mapPointToView(p))
+                    .join(" ")}
+                />
+              ))}
               {mappedZones.map((zone) => (
-                <g key={zone.zone_id} className="zone">
+                <g
+                  key={zone.zone_id}
+                  className={`zone${flashZones[zone.zone_id] ? " flash" : ""}${
+                    snapshot?.blocked_zones?.includes(zone.zone_id) ? " danger" : ""
+                  }`}
+                >
                   <polygon points={zone.points} />
                   <text x={zone.center.x} y={zone.center.y} textAnchor="middle">
                     {zone.zone_id}

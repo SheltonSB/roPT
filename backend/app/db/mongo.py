@@ -49,6 +49,14 @@ def col_runs():
     return get_db()["runs"]
 
 
+def col_graph():
+    return get_db()["graph"]
+
+
+def col_actors():
+    return get_db()["actors_state"]
+
+
 async def ensure_indexes() -> None:
     # Zones: unique zone_id
     await col_zones().create_index([("zone_id", ASCENDING)], unique=True)
@@ -63,3 +71,10 @@ async def ensure_indexes() -> None:
 
     # Metrics: query by run and time
     await col_metrics().create_index([("run_id", ASCENDING), ("ts_ms", ASCENDING)])
+
+    # Graph: nodes and edges lookup
+    await col_graph().create_index([("type", ASCENDING)])
+    await col_graph().create_index([("id", ASCENDING)])
+
+    # Actors: fast lookup by actor_id
+    await col_actors().create_index([("actor_id", ASCENDING)], unique=True)

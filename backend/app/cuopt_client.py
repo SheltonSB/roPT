@@ -37,12 +37,27 @@ class CuOptClient:
             return self._stub_solution(graph)
 
     def _stub_solution(self, graph: Dict[str, Any]) -> Dict[str, Any]:
-        # Return a simple identity route when no solver is present.
-        nodes: List[str] = graph.get("nodes", [])
+        # Return a simple route + candidate set when no solver is present.
+        node_objs = graph.get("nodes", [])
+        nodes: List[str] = [n.get("id") for n in node_objs if isinstance(n, dict) and n.get("id")]
+        if not nodes:
+            return {
+                "ok": False,
+                "reason": "cuopt_unreachable",
+                "route": [],
+                "candidates": [],
+            }
+        route = nodes[: min(5, len(nodes))]
+        candidates = [
+            route,
+            list(reversed(route)),
+            route[::2] + route[1::2],
+        ]
         return {
             "ok": False,
             "reason": "cuopt_unreachable",
-            "route": nodes,
+            "route": route,
+            "candidates": candidates,
         }
 
 

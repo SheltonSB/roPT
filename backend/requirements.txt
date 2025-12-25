@@ -5,3 +5,4 @@ pydantic-settings==2.4.0
 motor==3.6.0
 pymongo==4.9.1
 requests==2.32.3
+shapely==2.0.6
