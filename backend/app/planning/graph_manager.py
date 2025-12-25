@@ -5,29 +5,11 @@ In-memory graph + zone mapping for local planning updates.
 
 from __future__ import annotations
 
-from typing import Dict, List, Any, Tuple, Set
+from typing import Dict, List, Any, Set
+
+from shapely.geometry import Point, Polygon
 
 from ..db.mongo import get_db, col_graph
-
-
-def _point_in_polygon(point: Tuple[float, float], polygon: List[List[float]]) -> bool:
-    # Ray casting algorithm; polygon is list of [x,y].
-    x, y = point
-    inside = False
-    n = len(polygon)
-    if n < 3:
-        return False
-    j = n - 1
-    for i in range(n):
-        xi, yi = polygon[i]
-        xj, yj = polygon[j]
-        intersect = ((yi > y) != (yj > y)) and (
-            x < (xj - xi) * (y - yi) / (yj - yi + 1e-9) + xi
-        )
-        if intersect:
-            inside = not inside
-        j = i
-    return inside
 
 
 class GraphManager:
@@ -79,12 +61,13 @@ class GraphManager:
             if not zone_id or not polygon:
                 continue
             nodes_in_zone = []
+            polygon_obj = Polygon(polygon)
             for node_id, node in self.nodes.items():
                 x = node.get("x")
                 y = node.get("y")
                 if x is None or y is None:
                     continue
-                if _point_in_polygon((x, y), polygon):
+                if polygon_obj.contains(Point(x, y)):
                     nodes_in_zone.append(node_id)
             zone_to_nodes[zone_id] = nodes_in_zone
         self.zone_to_nodes = zone_to_nodes
@@ -116,4 +99,33 @@ class GraphManager:
             "nodes": list(self.nodes.values()),
             "edges": weighted_edges,
             "blocked_nodes": list(self.blocked_nodes),
+        }
+
+    def get_cost_matrix(self) -> Dict[str, Any]:
+        """
+        Build a cost matrix for the VRP solver with blocked nodes penalized.
+        """
+        nodes = list(self.nodes.values())
+        node_id_to_idx = {n["id"]: i for i, n in enumerate(nodes) if "id" in n}
+        n_count = len(nodes)
+        inf = 1_000_000.0
+        matrix = [[inf] * n_count for _ in range(n_count)]
+        for i in range(n_count):
+            matrix[i][i] = 0.0
+
+        for e in self.edges:
+            src = e.get("from")
+            dst = e.get("to")
+            weight = e.get("weight", 1.0)
+            if src in self.blocked_nodes or dst in self.blocked_nodes:
+                weight = inf
+            if src in node_id_to_idx and dst in node_id_to_idx:
+                u = node_id_to_idx[src]
+                v = node_id_to_idx[dst]
+                matrix[u][v] = weight
+
+        return {
+            "matrix": matrix,
+            "node_map": node_id_to_idx,
+            "nodes": nodes,
         }

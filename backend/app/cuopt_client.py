@@ -20,44 +20,54 @@ class CuOptClient:
         self.base_url = base_url or settings.cuopt_base_url
         self.timeout_s = timeout_s or settings.cuopt_timeout_s
 
-    def solve(self, graph: Dict[str, Any], constraints: Dict[str, Any]) -> Dict[str, Any]:
+    def solve(self, matrix_data: Dict[str, Any], constraints: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Send a routing request to cuOpt. Falls back to a pass-through plan if
-        the cuOpt service is unavailable.
+        Send a VRP request to cuOpt using a cost matrix. Falls back if unavailable.
         """
-        payload = {"graph": graph, "constraints": constraints}
+        payload = {
+            "cost_matrix_data": {
+                "cost_matrix": {
+                    0: matrix_data["matrix"]
+                }
+            },
+            "fleet_data": {
+                "vehicle_locations": constraints.get("vehicles", []),
+                "vehicle_ids": constraints.get("vehicle_ids", ["robot_1"]),
+            },
+            "task_data": {
+                "task_locations": constraints.get("tasks", []),
+                "demand": constraints.get("demand", []),
+            },
+            "solver_config": {
+                "time_limit": constraints.get("time_limit", 0.05),
+            },
+        }
         try:
             resp = requests.post(
-                f"{self.base_url}/solve", json=payload, timeout=self.timeout_s
+                f"{self.base_url.rstrip('/')}/cuopt/routes",
+                json=payload,
+                timeout=self.timeout_s,
             )
             resp.raise_for_status()
-            return resp.json()
+            return self._map_solution(resp.json(), matrix_data["node_map"])
         except Exception as exc:  # noqa: BLE001 - want to catch connection + HTTP errors
             logger.warning("cuOpt unreachable, returning stub solution: %s", exc)
-            return self._stub_solution(graph)
+            return self._fallback_local_solve(matrix_data)
 
-    def _stub_solution(self, graph: Dict[str, Any]) -> Dict[str, Any]:
-        # Return a simple route + candidate set when no solver is present.
-        node_objs = graph.get("nodes", [])
-        nodes: List[str] = [n.get("id") for n in node_objs if isinstance(n, dict) and n.get("id")]
-        if not nodes:
-            return {
-                "ok": False,
-                "reason": "cuopt_unreachable",
-                "route": [],
-                "candidates": [],
-            }
-        route = nodes[: min(5, len(nodes))]
-        candidates = [
-            route,
-            list(reversed(route)),
-            route[::2] + route[1::2],
-        ]
+    def _map_solution(self, solution: Dict[str, Any], node_map: Dict[str, int]) -> Dict[str, Any]:
+        idx_to_id = {v: k for k, v in node_map.items()}
+        raw_routes = solution.get("response", {}).get("solver_response", {}).get("routes", {})
+        routes = {}
+        for vehicle_id, route_indices in raw_routes.items():
+            routes[vehicle_id] = [idx_to_id.get(i, "?") for i in route_indices]
+        return {"ok": True, "routes": routes, "source": "cuopt"}
+
+    def _fallback_local_solve(self, matrix_data: Dict[str, Any]) -> Dict[str, Any]:
+        # Minimal fallback: return empty route for a single robot.
         return {
             "ok": False,
-            "reason": "cuopt_unreachable",
-            "route": route,
-            "candidates": candidates,
+            "reason": "solver_unreachable",
+            "routes": {"robot_1": []},
         }
 
 

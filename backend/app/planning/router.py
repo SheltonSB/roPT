@@ -27,8 +27,8 @@ def create_planning_router(graph_manager: GraphManager) -> APIRouter:
 
     @router.post("/route")
     async def plan_route(constraints: Dict[str, Any] | None = None):
-        graph = graph_manager.build_weighted_graph()
-        out = cuopt_client.solve(graph=graph, constraints=constraints or {})
-        return {"result": out}
+        matrix_data = graph_manager.get_cost_matrix()
+        out = cuopt_client.solve(matrix_data=matrix_data, constraints=constraints or {})
+        return out
 
     return router

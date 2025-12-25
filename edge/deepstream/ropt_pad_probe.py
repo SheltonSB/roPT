@@ -14,6 +14,8 @@ import argparse
 import json
 import sys
 import time
+import threading
+import queue
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple
 
@@ -39,6 +41,8 @@ class ProbeContext:
     backend_url: str
     zones: List[Zone]
     person_class_id: int
+    camera_view: str
+    event_queue: "queue.Queue[dict]"
     inside_state: Dict[str, Dict[str, bool]] = field(default_factory=dict)
 
 
@@ -78,14 +82,33 @@ def post_event(backend_url: str, evt: dict, retries: int = 5) -> None:
             backoff_s = min(backoff_s * 2, 5.0)
 
 
+def start_event_worker(backend_url: str) -> "queue.Queue[dict]":
+    q: "queue.Queue[dict]" = queue.Queue(maxsize=5000)
+
+    def worker():
+        while True:
+            evt = q.get()
+            try:
+                post_event(backend_url, evt)
+            except Exception:
+                # Drop on failure after retries to keep the pipeline moving.
+                pass
+            finally:
+                q.task_done()
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    return q
+
+
 def _ensure_actor_state(ctx: ProbeContext, actor_id: str) -> Dict[str, bool]:
     if actor_id not in ctx.inside_state:
         ctx.inside_state[actor_id] = {}
     return ctx.inside_state[actor_id]
 
 
-def _emit_zone_transitions(ctx: ProbeContext, actor_id: str, foot: Tuple[float, float]) -> None:
-    point = Point(foot[0], foot[1])
+def _emit_zone_transitions(ctx: ProbeContext, actor_id: str, point_xy: Tuple[float, float]) -> None:
+    point = Point(point_xy[0], point_xy[1])
     state = _ensure_actor_state(ctx, actor_id)
     ts_ms = int(time.time() * 1000)
 
@@ -102,9 +125,13 @@ def _emit_zone_transitions(ctx: ProbeContext, actor_id: str, foot: Tuple[float, 
             "ts_ms": ts_ms,
             "actor_id": actor_id,
             "zone_id": zone.zone_id,
-            "payload": {"foot_x": foot[0], "foot_y": foot[1]},
+            "payload": {"probe_x": point_xy[0], "probe_y": point_xy[1], "camera_view": ctx.camera_view},
         }
-        post_event(ctx.backend_url, evt)
+        try:
+            ctx.event_queue.put_nowait(evt)
+        except queue.Full:
+            # Drop if overloaded; transitions will be re-emitted on next state change.
+            pass
 
 
 def osd_sink_pad_buffer_probe(pad, info, ctx: ProbeContext):
@@ -129,10 +156,14 @@ def osd_sink_pad_buffer_probe(pad, info, ctx: ProbeContext):
 
             if obj_meta.class_id == ctx.person_class_id:
                 rect = obj_meta.rect_params
-                foot_x = rect.left + rect.width / 2.0
-                foot_y = rect.top + rect.height
+                if ctx.camera_view == "top":
+                    probe_x = rect.left + rect.width / 2.0
+                    probe_y = rect.top + rect.height / 2.0
+                else:
+                    probe_x = rect.left + rect.width / 2.0
+                    probe_y = rect.top + rect.height
                 actor_id = f"person_{obj_meta.object_id}"
-                _emit_zone_transitions(ctx, actor_id, (foot_x, foot_y))
+                _emit_zone_transitions(ctx, actor_id, (probe_x, probe_y))
 
             try:
                 l_obj = l_obj.next
@@ -229,6 +260,12 @@ def main():
         help="Primary GIE config file path",
     )
     parser.add_argument("--person-class-id", type=int, default=0, help="PGIE class id for person")
+    parser.add_argument(
+        "--camera-view",
+        choices=["side", "top"],
+        default="side",
+        help="Probe point strategy: side=bottom-center, top=center",
+    )
     parser.add_argument("--mux-width", type=int, default=1280)
     parser.add_argument("--mux-height", type=int, default=720)
     args = parser.parse_args()
@@ -246,6 +283,8 @@ def main():
         backend_url=args.backend_url,
         zones=zones,
         person_class_id=args.person_class_id,
+        event_queue=start_event_worker(args.backend_url),
+        camera_view=args.camera_view,
     )
 
     pipeline = build_pipeline(args.uri, args.pgie_config, args.mux_width, args.mux_height)

@@ -81,6 +81,7 @@ cd edge/deepstream
 python ropt_pad_probe.py \
   --backend-url http://127.0.0.1:8000 \
   --zones-from-backend \
+  --camera-view side \
   --uri file:///opt/nvidia/deepstream/deepstream-8.0/samples/streams/sample_720p.h264
 ```
 
@@ -97,6 +98,17 @@ Dependencies:
 - `POST /runs/start`, `POST /runs/stop`, `GET /runs` Run lifecycle.
 - `POST /metrics`, `GET /metrics` Perf metrics.
 - `GET /ws` WebSocket stream of live snapshots.
+- `GET /ws/replay/{run_id}` WebSocket replay of recorded events.
+
+## Planning route example (node indices)
+```
+POST /planning/route
+{
+  "vehicles": [[0, 5]],
+  "vehicle_ids": ["robot_alpha"],
+  "tasks": [2, 3]
+}
+```
 
 ## Event format (edge -> backend)
 Example JSON:

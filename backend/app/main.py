@@ -49,15 +49,15 @@ def create_app() -> FastAPI:
     app.include_router(metrics.router)
     app.include_router(create_planning_router(graph_manager))
 
-    # bind shared state into routers that need it
-    events.bind(state, queue)
-    runs.bind_state(state)
-    zones.bind_graph(graph_manager)
-    zones.bind_spatial(spatial_manager)
+    # store shared singletons for DI
+    app.state.runtime_state = state
+    app.state.event_queue = queue
+    app.state.graph_manager = graph_manager
+    app.state.spatial_manager = spatial_manager
 
     @app.on_event("startup")
     async def startup():
-        await get_db().command("ping")
+        await _wait_for_mongo()
         await ensure_indexes()
         await graph_manager.load_base_graph()
         try:
@@ -91,6 +91,27 @@ def create_app() -> FastAPI:
                 await ws.receive_text()
         except WebSocketDisconnect:
             ws_manager.disconnect(ws)
+
+    @app.websocket("/ws/replay/{run_id}")
+    async def websocket_replay(ws: WebSocket, run_id: str):
+        await ws.accept()
+        speed = float(ws.query_params.get("speed", "1.0"))
+        limit = int(ws.query_params.get("limit", "5000"))
+        limit = max(1, min(limit, 10000))
+        speed = max(0.1, min(speed, 10.0))
+        events = await events_repo.query_events(run_id=run_id, limit=limit)
+        if not events:
+            await ws.send_json({"type": "replay_done", "data": {"run_id": run_id}})
+            await ws.close()
+            return
+        prev_ts = events[0].get("ts_ms", 0)
+        for evt in events:
+            ts = evt.get("ts_ms", prev_ts)
+            delay_s = max(0.0, (ts - prev_ts) / 1000.0 / speed)
+            await asyncio.sleep(min(delay_s, 2.0))
+            await ws.send_json({"type": "replay_event", "data": evt})
+            prev_ts = ts
+        await ws.send_json({"type": "replay_done", "data": {"run_id": run_id}})
 
     return app
 
@@ -132,15 +153,18 @@ async def _event_processor(
                 graph_manager.update_zone_block(
                     e.zone_id, blocked="ENTER" in e.event_type
                 )
-                graph = graph_manager.build_weighted_graph()
-                result = cuopt_client.solve(graph=graph, constraints={})
+                matrix_data = graph_manager.get_cost_matrix()
+                constraints = _build_constraints_from_event(graph_manager, e, matrix_data)
+                result = cuopt_client.solve(matrix_data=matrix_data, constraints=constraints)
+                routes = result.get("routes", {})
+                first_robot = next(iter(routes.keys()), "robot_1")
                 await ws_manager.broadcast_json(
                     {
                         "type": "route_update",
                         "data": {
-                            "robot_id": result.get("robot_id", "robot_01"),
-                            "optimal_path": result.get("route", []),
-                            "candidates": result.get("candidates", []),
+                            "robot_id": first_robot,
+                            "optimal_path": routes.get(first_robot, []),
+                            "candidates": [],
                             "is_reroute": "ENTER" in e.event_type,
                         },
                     }
@@ -162,6 +186,46 @@ async def _restore_blocked_state(graph_manager: GraphManager) -> None:
     for zone_id, count in zone_counts.items():
         if count > 0:
             graph_manager.update_zone_block(zone_id, blocked=True)
+
+
+def _build_constraints_from_event(
+    graph_manager: GraphManager,
+    event: SafetyEventIn,
+    matrix_data: dict,
+) -> dict:
+    """
+    Minimal constraints builder that maps zone events to node indices.
+    """
+    node_map = matrix_data.get("node_map", {})
+    node_ids = list(node_map.keys())
+    if not node_ids:
+        return {}
+    start_idx = node_map[node_ids[0]]
+    end_idx = node_map[node_ids[-1]]
+    tasks = []
+    if event.zone_id and event.zone_id in graph_manager.zone_to_nodes:
+        for node_id in graph_manager.zone_to_nodes[event.zone_id][:3]:
+            idx = node_map.get(node_id)
+            if idx is not None:
+                tasks.append(idx)
+    return {
+        "vehicles": [[start_idx, end_idx]],
+        "vehicle_ids": ["robot_1"],
+        "tasks": tasks,
+    }
+
+
+async def _wait_for_mongo(max_attempts: int = 8) -> None:
+    backoff_s = 0.5
+    for attempt in range(1, max_attempts + 1):
+        try:
+            await get_db().command("ping")
+            return
+        except Exception as exc:
+            logger.warning("MongoDB not ready (attempt %s/%s): %s", attempt, max_attempts, exc)
+            await asyncio.sleep(backoff_s)
+            backoff_s = min(backoff_s * 2, 6.0)
+    raise RuntimeError("MongoDB not reachable after retries")
 
 
 async def _persist_actor_state(state: RuntimeState, actor_id: str) -> None:

@@ -22,6 +22,7 @@ function App() {
   const [flashZones, setFlashZones] = useState({});
   const [ghostPaths, setGhostPaths] = useState([]);
   const [nodeIndex, setNodeIndex] = useState({});
+  const [lockAspect, setLockAspect] = useState(true);
   const seenEventsRef = useRef(new Set());
   const flashTimersRef = useRef({});
 
@@ -162,18 +163,51 @@ function App() {
     return { minX, minY, maxX, maxY };
   }, [zones]);
 
-  const mappedZones = useMemo(() => {
+  const transform = useMemo(() => {
     const { minX, minY, maxX, maxY } = bounds;
     const dx = maxX - minX || 1;
     const dy = maxY - minY || 1;
-    const scaleX = (VIEW.width - VIEW.padding * 2) / dx;
-    const scaleY = (VIEW.height - VIEW.padding * 2) / dy;
+    const rawScaleX = (VIEW.width - VIEW.padding * 2) / dx;
+    const rawScaleY = (VIEW.height - VIEW.padding * 2) / dy;
+    if (lockAspect) {
+      const scale = Math.min(rawScaleX, rawScaleY);
+      const extraX = (VIEW.width - VIEW.padding * 2 - dx * scale) / 2;
+      const extraY = (VIEW.height - VIEW.padding * 2 - dy * scale) / 2;
+      return {
+        minX,
+        minY,
+        scaleX: scale,
+        scaleY: scale,
+        offsetX: VIEW.padding + extraX,
+        offsetY: VIEW.padding + extraY
+      };
+    }
+    return {
+      minX,
+      minY,
+      scaleX: rawScaleX,
+      scaleY: rawScaleY,
+      offsetX: VIEW.padding,
+      offsetY: VIEW.padding
+    };
+  }, [bounds, lockAspect]);
+
+  const mapPointToView = (p) => {
+    const px = transform.offsetX + (p.x - transform.minX) * transform.scaleX;
+    const py = transform.offsetY + (p.y - transform.minY) * transform.scaleY;
+    return `${px.toFixed(1)},${py.toFixed(1)}`;
+  };
+
+  const mappedZones = useMemo(() => {
+    const mapPoint = (p) => {
+      const px = transform.offsetX + (p.x - transform.minX) * transform.scaleX;
+      const py = transform.offsetY + (p.y - transform.minY) * transform.scaleY;
+      return `${px.toFixed(1)},${py.toFixed(1)}`;
+    };
     return zones.map((z) => {
       const points = z.polygon
         .map(([x, y]) => {
-          const px = VIEW.padding + (x - minX) * scaleX;
-          const py = VIEW.padding + (y - minY) * scaleY;
-          return `${px.toFixed(1)},${py.toFixed(1)}`;
+          return mapPoint({ x, y });
         })
         .join(" ");
       const center = z.polygon.reduce(
@@ -184,22 +218,12 @@ function App() {
         },
         { x: 0, y: 0 }
       );
-      const cx = VIEW.padding + ((center.x / z.polygon.length - minX) * scaleX);
-      const cy = VIEW.padding + ((center.y / z.polygon.length - minY) * scaleY);
-      return { ...z, points, center: { x: cx, y: cy } };
+      const cx = center.x / z.polygon.length;
+      const cy = center.y / z.polygon.length;
+      const [mx, my] = mapPoint({ x: cx, y: cy }).split(",");
+      return { ...z, points, center: { x: Number(mx), y: Number(my) } };
     });
-  }, [zones, bounds]);
-
-  const mapPointToView = (p) => {
-    const { minX, minY, maxX, maxY } = bounds;
-    const dx = maxX - minX || 1;
-    const dy = maxY - minY || 1;
-    const scaleX = (VIEW.width - VIEW.padding * 2) / dx;
-    const scaleY = (VIEW.height - VIEW.padding * 2) / dy;
-    const px = VIEW.padding + (p.x - minX) * scaleX;
-    const py = VIEW.padding + (p.y - minY) * scaleY;
-    return `${px.toFixed(1)},${py.toFixed(1)}`;
-  };
+  }, [zones, transform]);
 
   const actors = useMemo(() => {
     if (!snapshot?.actors) return [];
@@ -212,6 +236,20 @@ function App() {
   }, [snapshot]);
 
   const recentEvents = snapshot?.recent_events || [];
+  const blockedZones = snapshot?.blocked_zones || [];
+
+  const pathCost = (nodes) => {
+    let cost = 0;
+    for (let i = 1; i < nodes.length; i += 1) {
+      const a = nodeIndex[nodes[i - 1]];
+      const b = nodeIndex[nodes[i]];
+      if (!a || !b) continue;
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      cost += Math.hypot(dx, dy);
+    }
+    return cost;
+  };
 
   return (
     <div className="app">
@@ -236,6 +274,14 @@ function App() {
             <p className="label">Active actors</p>
             <p className="value">{actors.length}</p>
           </div>
+          <label className="toggle">
+            <input
+              type="checkbox"
+              checked={lockAspect}
+              onChange={() => setLockAspect((prev) => !prev)}
+            />
+            <span>Lock aspect ratio</span>
+          </label>
         </div>
       </header>
 
@@ -266,13 +312,19 @@ function App() {
                     .filter(Boolean)
                     .map((p) => mapPointToView(p))
                     .join(" ")}
-                />
+                >
+                  <title>
+                    {`Cost: ${pathCost(path.nodes).toFixed(1)} | Risk: ${
+                      blockedZones.length ? "High" : "Low"
+                    }`}
+                  </title>
+                </polyline>
               ))}
               {mappedZones.map((zone) => (
                 <g
                   key={zone.zone_id}
                   className={`zone${flashZones[zone.zone_id] ? " flash" : ""}${
-                    snapshot?.blocked_zones?.includes(zone.zone_id) ? " danger" : ""
+                    blockedZones.includes(zone.zone_id) ? " danger" : ""
                   }`}
                 >
                   <polygon points={zone.points} />

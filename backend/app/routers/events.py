@@ -5,26 +5,22 @@ Writes events to MongoDB and updates live runtime state.
 """
 
 import asyncio
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from ..schemas import SafetyEventIn
-from ..runtime_state import RuntimeState, now_ms
 from ..repos import events_repo
+from ..deps import get_queue
 
 router = APIRouter()
-QUEUE: "asyncio.Queue[SafetyEventIn]" = None
-
-
-def bind(state: RuntimeState, queue: "asyncio.Queue[SafetyEventIn]"):
-    router.state_ref = state
-    global QUEUE
-    QUEUE = queue
 
 
 @router.post("/events")
-async def ingest_event(e: SafetyEventIn):
+async def ingest_event(
+    e: SafetyEventIn,
+    queue: "asyncio.Queue[SafetyEventIn]" = Depends(get_queue),
+):
     try:
-        QUEUE.put_nowait(e)
+        queue.put_nowait(e)
         return {"ok": True}
     except asyncio.QueueFull:
         return {"ok": False, "error": "event_queue_full"}

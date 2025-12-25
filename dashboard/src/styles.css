@@ -95,6 +95,18 @@ h1 {
   box-shadow: 0 12px 30px var(--shadow);
 }
 
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.toggle input {
+  accent-color: var(--accent-2);
+}
+
 .label {
   font-size: 12px;
   text-transform: uppercase;
