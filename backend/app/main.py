@@ -7,12 +7,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import structlog
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
-from .runtime_state import RuntimeState, now_ms
+from .runtime_state import RuntimeState, RedisRuntimeState, now_ms
 from .schemas import SafetyEventIn
 from .db.mongo import ensure_indexes, get_db
 from .repos import events_repo, runs_repo, zones_repo
@@ -21,23 +22,32 @@ from .ws import ConnectionManager
 from .planning import GraphManager, SpatialManager, create_planning_router
 from .cuopt_client import client as cuopt_client
 from .db.mongo import col_actors
+import redis.asyncio as redis
 
 
 def create_app() -> FastAPI:
     app = FastAPI(title="ROPT Backend", version="1.0")
+    allow_origins = _parse_cors_origins(settings.cors_allow_origins)
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=allow_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
 
-    state = RuntimeState(max_events=settings.max_events)
+    redis_client = None
+    if settings.redis_url:
+        redis_client = redis.from_url(settings.redis_url, decode_responses=True)
+    state: RuntimeState | RedisRuntimeState
+    if redis_client:
+        state = RedisRuntimeState(redis_client, max_events=settings.max_events)
+    else:
+        state = RuntimeState(max_events=settings.max_events)
     queue: "asyncio.Queue[SafetyEventIn]" = asyncio.Queue(
         maxsize=settings.event_queue_max
     )
-    ws_manager = ConnectionManager()
+    ws_manager = ConnectionManager(redis_client=redis_client)
     graph_manager = GraphManager()
     spatial_manager = SpatialManager()
 
@@ -54,6 +64,7 @@ def create_app() -> FastAPI:
     app.state.event_queue = queue
     app.state.graph_manager = graph_manager
     app.state.spatial_manager = spatial_manager
+    app.state.redis = redis_client
 
     @app.on_event("startup")
     async def startup():
@@ -70,11 +81,13 @@ def create_app() -> FastAPI:
             # If zones are not available yet, keep empty mapping.
             pass
         await _restore_blocked_state(graph_manager)
+        if redis_client:
+            asyncio.create_task(ws_manager.start_redis_listener())
         asyncio.create_task(_event_processor(state, queue, ws_manager, graph_manager))
 
     @app.get("/state")
     async def get_state():
-        snap = state.snapshot()
+        snap = await state.snapshot()
         snap["blocked_zones"] = list(graph_manager.blocked_zones)
         snap["blocked_nodes"] = list(graph_manager.blocked_nodes)
         return snap
@@ -83,7 +96,7 @@ def create_app() -> FastAPI:
     async def websocket_endpoint(ws: WebSocket):
         await ws_manager.connect(ws)
         try:
-            snap = state.snapshot()
+            snap = await state.snapshot()
             snap["blocked_zones"] = list(graph_manager.blocked_zones)
             snap["blocked_nodes"] = list(graph_manager.blocked_nodes)
             await ws.send_json({"type": "snapshot", "data": snap})
@@ -125,15 +138,16 @@ async def _event_processor(
     while True:
         e = await queue.get()
         try:
-            run_id = e.run_id or state.active_run_id
+            run_id = e.run_id or await state.get_active_run_id()
             if run_id is None:
                 run_id = await runs_repo.start_run("auto_run")
-                state.active_run_id = run_id
+                await state.set_active_run_id(run_id)
 
-            actor = state.upsert_actor(e.actor_id, e.ts_ms)
+            actor = await state.upsert_actor(e.actor_id, e.ts_ms)
             prev = actor.zones.get(e.zone_id, False)
             inside = True if "ENTER" in e.event_type else False if "EXIT" in e.event_type else prev
             actor.zones[e.zone_id] = inside
+            await state.save_actor(e.actor_id, actor)
 
             doc = e.model_dump()
             doc["run_id"] = run_id
@@ -142,10 +156,16 @@ async def _event_processor(
                 _id = await events_repo.insert_event(doc)
                 doc["_id"] = _id
             except Exception as exc:
-                logger.exception("Failed to persist event to MongoDB: %s", exc)
+                logger.error(
+                    "mongo_write_failed",
+                    actor_id=e.actor_id,
+                    zone_id=e.zone_id,
+                    event_type=e.event_type,
+                    error=str(exc),
+                )
 
-            state.push_event(doc)
-            snap = state.snapshot()
+            await state.push_event(doc)
+            snap = await state.snapshot()
             snap["blocked_zones"] = list(graph_manager.blocked_zones)
             snap["blocked_nodes"] = list(graph_manager.blocked_nodes)
             await ws_manager.broadcast_json({"type": "snapshot", "data": snap})
@@ -169,7 +189,7 @@ async def _event_processor(
                         },
                     }
                 )
-            await _persist_actor_state(state, e.actor_id)
+            await _persist_actor_state(actor, e.actor_id)
         finally:
             queue.task_done()
 
@@ -228,9 +248,8 @@ async def _wait_for_mongo(max_attempts: int = 8) -> None:
     raise RuntimeError("MongoDB not reachable after retries")
 
 
-async def _persist_actor_state(state: RuntimeState, actor_id: str) -> None:
+async def _persist_actor_state(actor: object, actor_id: str) -> None:
     # Save only the actor that changed.
-    actor = state.actors.get(actor_id)
     if actor is None:
         return
     await col_actors().update_one(
@@ -240,7 +259,22 @@ async def _persist_actor_state(state: RuntimeState, actor_id: str) -> None:
     )
 
 
-logger = logging.getLogger("ropt.backend")
+def _parse_cors_origins(raw: str) -> list[str]:
+    if not raw:
+        return ["*"]
+    if raw.strip() == "*":
+        return ["*"]
+    return [o.strip() for o in raw.split(",") if o.strip()]
+
+
+structlog.configure(
+    processors=[
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.add_log_level,
+        structlog.processors.JSONRenderer(),
+    ],
+)
+logger = structlog.get_logger("ropt.backend")
 app = create_app()
 
 __all__ = ["app", "create_app"]

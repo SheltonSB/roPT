@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends
 
 from ..schemas import SafetyEventIn
 from ..repos import events_repo
-from ..deps import get_queue
+from ..deps import get_queue, require_edge_key
 
 router = APIRouter()
 
@@ -18,6 +18,7 @@ router = APIRouter()
 async def ingest_event(
     e: SafetyEventIn,
     queue: "asyncio.Queue[SafetyEventIn]" = Depends(get_queue),
+    _auth: None = Depends(require_edge_key),
 ):
     try:
         queue.put_nowait(e)

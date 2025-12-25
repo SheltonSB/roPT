@@ -22,7 +22,11 @@ _db: Optional[AsyncIOMotorDatabase] = None
 def get_client() -> AsyncIOMotorClient:
     global _client
     if _client is None:
-        _client = AsyncIOMotorClient(settings.mongo_uri)
+        _client = AsyncIOMotorClient(
+            settings.mongo_uri,
+            minPoolSize=settings.mongo_min_pool_size,
+            maxPoolSize=settings.mongo_max_pool_size,
+        )
     return _client
 
 
@@ -71,6 +75,18 @@ async def ensure_indexes() -> None:
 
     # Metrics: query by run and time
     await col_metrics().create_index([("run_id", ASCENDING), ("ts_ms", ASCENDING)])
+
+    # TTL cleanup (seconds); 0 disables TTL
+    if settings.events_ttl_days > 0:
+        await col_events().create_index(
+            [("ts_ms", ASCENDING)],
+            expireAfterSeconds=int(settings.events_ttl_days * 86400),
+        )
+    if settings.metrics_ttl_days > 0:
+        await col_metrics().create_index(
+            [("ts_ms", ASCENDING)],
+            expireAfterSeconds=int(settings.metrics_ttl_days * 86400),
+        )
 
     # Graph: nodes and edges lookup
     await col_graph().create_index([("type", ASCENDING)])

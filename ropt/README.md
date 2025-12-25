@@ -85,12 +85,16 @@ python ropt_pad_probe.py \
   --uri file:///opt/nvidia/deepstream/deepstream-8.0/samples/streams/sample_720p.h264
 ```
 
+If `ROPT_EDGE_API_KEY` is set on the backend, pass it via `--api-key` or env:
+`ROPT_EDGE_API_KEY=... python ropt_pad_probe.py ...`
+
 Dependencies:
 - DeepStream Python bindings (`pyds`)
 - `shapely` for polygon tests
 
 ## Key API endpoints
 - `GET /health` Health check (includes Mongo ping).
+- `GET /health/ready` Readiness check (fails if cuOpt is down).
 - `GET /state` Live state snapshot.
 - `POST /events` Ingest safety events (queued).
 - `GET /events` Query stored events.
@@ -129,16 +133,36 @@ Set via `.env` or environment:
 - `ROPT_BACKEND_PORT` (default `8000`)
 - `ROPT_MONGO_URI` (default `mongodb://127.0.0.1:27017`)
 - `ROPT_MONGO_DB` (default `ropt`)
+- `ROPT_MONGO_MIN_POOL_SIZE` (default `0`)
+- `ROPT_MONGO_MAX_POOL_SIZE` (default `100`)
 - `ROPT_CUOPT_URL` (default `http://127.0.0.1:5000`)
 - `ROPT_CUOPT_TIMEOUT_S` (default `0.05`)
 - `ROPT_EVENT_QUEUE_MAX` (default `20000`)
 - `ROPT_MAX_EVENTS` (default `5000`)
+- `ROPT_EVENTS_TTL_DAYS` (default `0`, disabled)
+- `ROPT_METRICS_TTL_DAYS` (default `7`)
+- `ROPT_WORKERS` (default `2`)
 
 ## Notes
 - Backend entrypoint is `app.main:app` (async, Mongo-backed).
 - Edge bridge accepts newline-delimited JSON on stdin or `--demo` synthetic events.
 - cuOpt client is stubbed if the solver is unreachable.
 - CORS is open for hackathon use; restrict `allow_origins` to the dashboard host in production.
+
+## Production deployment
+- Docker uses `gunicorn` with `uvicorn` workers for process supervision.
+- `/health` includes cuOpt readiness checks.
+- Logs are structured JSON (structlog) for easy aggregation.
+
+## Security (production guidance)
+- Set `ROPT_CORS_ALLOW_ORIGINS` to a comma-separated allowlist (e.g. `https://dashboard.example.com`).
+- Protect edge ingestion with `ROPT_EDGE_API_KEY` and send `X-API-Key` on `/events`.
+- Protect dashboard write paths with `ROPT_DASHBOARD_API_KEY` for `/zones` and `/planning/graph`.
+- Use secrets management (Docker Secrets, Vault) for `ROPT_MONGO_URI` and API keys instead of `.env`.
+
+## Scaling notes
+- Set `ROPT_REDIS_URL` to externalize runtime state and enable WS pub/sub across replicas.
+- WebSocket broadcasts are published via Redis so all backend instances reach their local clients.
 
 ## Troubleshooting
 - If `/health` fails, verify MongoDB is running and reachable.

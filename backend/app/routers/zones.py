@@ -9,7 +9,7 @@ from ..schemas import ZonesPayload
 from ..repos import zones_repo
 from ..planning.graph_manager import GraphManager
 from ..planning.spatial_manager import SpatialManager
-from ..deps import get_graph_manager, get_spatial_manager
+from ..deps import get_graph_manager, get_spatial_manager, require_dashboard_key
 
 router = APIRouter()
 
@@ -24,6 +24,7 @@ async def put_zones(
     payload: ZonesPayload,
     graph_manager: GraphManager = Depends(get_graph_manager),
     spatial_manager: SpatialManager = Depends(get_spatial_manager),
+    _auth: None = Depends(require_dashboard_key),
 ):
     zones = [z.model_dump() for z in payload.zones]
     out = await zones_repo.upsert_zones(zones)

@@ -54,6 +54,14 @@ class CuOptClient:
             logger.warning("cuOpt unreachable, returning stub solution: %s", exc)
             return self._fallback_local_solve(matrix_data)
 
+    def health_check(self) -> dict:
+        try:
+            resp = requests.get(f"{self.base_url.rstrip('/')}/health", timeout=self.timeout_s)
+            resp.raise_for_status()
+            return {"ok": True}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
     def _map_solution(self, solution: Dict[str, Any], node_map: Dict[str, int]) -> Dict[str, Any]:
         idx_to_id = {v: k for k, v in node_map.items()}
         raw_routes = solution.get("response", {}).get("solver_response", {}).get("routes", {})

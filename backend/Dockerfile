@@ -12,5 +12,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 
 EXPOSE 8000
-# Run the full async backend (Mongo + queues + routers)
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run via gunicorn + uvicorn workers for production robustness
+CMD ["sh", "-c", "gunicorn app.main:app -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000 --workers ${ROPT_WORKERS:-2}"]

@@ -7,10 +7,11 @@ from __future__ import annotations
 
 from typing import Dict, Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from .graph_manager import GraphManager
 from ..cuopt_client import client as cuopt_client
+from ..deps import require_dashboard_key
 
 
 def create_planning_router(graph_manager: GraphManager) -> APIRouter:
@@ -21,7 +22,7 @@ def create_planning_router(graph_manager: GraphManager) -> APIRouter:
         return {"graph": graph_manager.build_weighted_graph()}
 
     @router.put("/graph")
-    async def put_graph(graph: Dict[str, Any]):
+    async def put_graph(graph: Dict[str, Any], _auth: None = Depends(require_dashboard_key)):
         await graph_manager.save_base_graph(graph)
         return {"ok": True}
 

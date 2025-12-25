@@ -19,6 +19,7 @@ import queue
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple
 
+import os
 import requests
 from shapely.geometry import Point, Polygon
 
@@ -67,12 +68,13 @@ def fetch_zones(backend_url: str) -> List[Zone]:
     return zones
 
 
-def post_event(backend_url: str, evt: dict, retries: int = 5) -> None:
+def post_event(backend_url: str, evt: dict, api_key: str | None, retries: int = 5) -> None:
     url = f"{backend_url.rstrip('/')}/events"
     backoff_s = 0.5
     for attempt in range(retries):
         try:
-            resp = requests.post(url, json=evt, timeout=2)
+            headers = {"X-API-Key": api_key} if api_key else None
+            resp = requests.post(url, json=evt, headers=headers, timeout=2)
             resp.raise_for_status()
             return
         except Exception:
@@ -82,14 +84,14 @@ def post_event(backend_url: str, evt: dict, retries: int = 5) -> None:
             backoff_s = min(backoff_s * 2, 5.0)
 
 
-def start_event_worker(backend_url: str) -> "queue.Queue[dict]":
+def start_event_worker(backend_url: str, api_key: str | None) -> "queue.Queue[dict]":
     q: "queue.Queue[dict]" = queue.Queue(maxsize=5000)
 
     def worker():
         while True:
             evt = q.get()
             try:
-                post_event(backend_url, evt)
+                post_event(backend_url, evt, api_key)
             except Exception:
                 # Drop on failure after retries to keep the pipeline moving.
                 pass
@@ -261,6 +263,11 @@ def main():
     )
     parser.add_argument("--person-class-id", type=int, default=0, help="PGIE class id for person")
     parser.add_argument(
+        "--api-key",
+        default=os.environ.get("ROPT_EDGE_API_KEY"),
+        help="API key for /events (or set ROPT_EDGE_API_KEY)",
+    )
+    parser.add_argument(
         "--camera-view",
         choices=["side", "top"],
         default="side",
@@ -283,7 +290,7 @@ def main():
         backend_url=args.backend_url,
         zones=zones,
         person_class_id=args.person_class_id,
-        event_queue=start_event_worker(args.backend_url),
+        event_queue=start_event_worker(args.backend_url, args.api_key),
         camera_view=args.camera_view,
     )
 
