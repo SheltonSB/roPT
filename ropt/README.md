@@ -8,5 +8,11 @@ ROPT is a real-time safety-aware routing system that detects when people enter r
 4) Inspect state: `curl http://127.0.0.1:8000/state`
 
 ## Notes
-- Backend entrypoint is `app.api_saver:app` (async, Mongo-backed).
+- Backend entrypoint is `app.main:app` (async, Mongo-backed).
 - Edge bridge accepts newline-delimited JSON on stdin or `--demo` synthetic events.
+
+## Dashboard
+1) `cd dashboard`
+2) `npm install`
+3) `npm run dev`
+4) Open `http://127.0.0.1:5173` and ensure the backend is running.
